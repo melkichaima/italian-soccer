@@ -1,5 +1,141 @@
 ---
-title: "soccer"
+title: "Which is the best team ever in Italian soccer?"
 output: html_document
+editor_options:
+  chunk_output_type: inline
 ---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, echo = TRUE, eval = FALSE, message = FALSE, warning = FALSE, fig.align = 'center')
+```
+
+This challenge explores all matches of Italian soccer Serie A league from 1993 to current year. The dataset is contained in the website [football-data.co.uk](http://www.football-data.co.uk/italym.php).
+
+### Challenges
+
+1. Think about how to scrape the data from the website, but write no code at this stage.
+1. Ask AI to write code to import data by scraping the website. Select only columns Date, HomeTeam, AwayTeam, FTHG (home team goals), FTAG (away team goals) and filter rows with a valid (not NA) Date.
+1. Using dplyr and tidyr packages (no for loops!), compute statistics for every team (matches, wins, loses, draws, points, points per match). Hint: mutate a column with the outcome of the match (for instance, H = home teams wins, A = away team wins, P = draw). Then group by team and outcome (home and away) and hence spread the outcome. Do this step without the use of AI.
+1. Come up with at least 3 data questions on the data at hand. Just write the questions, do not find the answers.
+
+---
+
+## Challenge 1 — Scraping approach (no code)
+
+The data lives at [football-data.co.uk/italym.php](http://www.football-data.co.uk/italym.php), where each season (1993/94 onward) has a link to a CSV file named with a pattern like `mmz4281/<season code>/I1.csv` (e.g. `9394` for 1993/94, `2425` for 2024/25).
+
+To get all seasons, I would scrape the page's HTML to extract every link ending in `I1.csv`, then download and read each CSV, combining them into one dataframe.
+
+## Challenge 2 — Scraping code
+
+```{r scrape-data}
+library(tidyverse)
+library(rvest)
+
+# Step 1: scrape the italym.php page for every Serie A (I1) CSV link
+page <- read_html("https://www.football-data.co.uk/italym.php")
+
+links <- page %>%
+  html_elements("a") %>%
+  html_attr("href")
+
+serie_a_links <- links %>%
+  discard(is.na) %>%
+  keep(~ str_detect(.x, "I1\\.csv$"))
+
+# turn relative links into full URLs
+serie_a_urls <- paste0("https://www.football-data.co.uk/", serie_a_links)
+
+# Step 2: download & read every season's CSV, combine into one dataframe
+all_matches <- map_dfr(serie_a_urls, function(url) {
+  read_csv(url, col_types = cols(.default = "c"))  # read everything as character first (columns vary across seasons)
+})
+
+# Step 3: keep only the needed columns, parse Date, drop rows with invalid/missing Date
+matches <- all_matches %>%
+  select(Date, HomeTeam, AwayTeam, FTHG, FTAG) %>%
+  mutate(
+    Date = parse_date_time(Date, orders = c("dmy", "d/m/y", "d/m/Y")),
+    FTHG = as.numeric(FTHG),
+    FTAG = as.numeric(FTAG)
+  ) %>%
+  filter(!is.na(Date))
+
+matches
+```
+
+## Challenge 3 — Per-team statistics (no AI — write this yourself)
+
+```{r team-stats}
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# Read data
+matches <- read_csv("I1.csv")
+
+# Step 1: Create match outcome
+matches <- matches %>%
+  mutate(
+    outcome = case_when(
+      FTHG > FTAG ~ "H",
+      FTAG > FTHG ~ "A",
+      TRUE ~ "D"
+    )
+  )
+
+# Step 2: Convert from match-level to team-level data
+team_matches <- matches %>%
+  transmute(
+    team = HomeTeam,
+    result = case_when(
+      outcome == "H" ~ "W",
+      outcome == "A" ~ "L",
+      TRUE ~ "D"
+    )
+  ) %>%
+  bind_rows(
+    matches %>%
+      transmute(
+        team = AwayTeam,
+        result = case_when(
+          outcome == "A" ~ "W",
+          outcome == "H" ~ "L",
+          TRUE ~ "D"
+        )
+      )
+  )
+
+# Step 3: Count outcomes for each team
+standings <- team_matches %>%
+  group_by(team, result) %>%
+  summarise(n = n(), .groups = "drop") %>%
+
+  # Step 4: Spread outcomes into columns
+  pivot_wider(
+    names_from = result,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+
+  # Step 5: Calculate statistics
+  mutate(
+    matches = W + D + L,
+    wins    = W,
+    draws   = D,
+    losses  = L,
+    points  = 3 * wins + draws,
+    ppm     = points / matches
+  ) %>%
+
+  select(team, matches, wins, draws, losses, points, ppm) %>%
+  arrange(desc(points))
+
+standings
+```
+
+## Challenge 4 — Data questions (no answers)
+
+1. Has the average number of goals scored per match changed over time, and are there any periods with particularly high or low scoring?
+2. Which teams benefit the most from playing at home, and does the size of the home advantage differ across seasons?
+3. Which teams are the most consistent from season to season, and which teams show the greatest variation in their performance over time?
